@@ -90,29 +90,55 @@ class AccessViewSet(LoggingMixin, mixins.ListModelMixin, viewsets.GenericViewSet
         # phone numbers, MXIDs, nfc tags are/will be unique
         user = users.first()
 
-        # user does not have access rights
-        if not user.has_door_access():
-            response_status = 481
+        # If the device has explicit allowed_permissions configured, require the
+        # user to have at least one of those AccessPermissions. If no
+        # allowed_permissions are configured, fall back to legacy behaviour.
+        if getattr(device, "allowed_permissions", None) and device.allowed_permissions.exists():
+            allowed_ids = list(device.allowed_permissions.values_list("id", flat=True))
+            # check user's assigned permissions
+            has_perm = getattr(user, "access_permissions", None) and user.access_permissions.filter(
+                id__in=allowed_ids
+            ).exists()
+            if not has_perm:
+                response_status = 481
+        else:
+            # legacy behaviour: if there are still allowed_services configured
+            # (backward compatibility), check membership subscriptions; otherwise
+            # fall back to has_door_access().
+            if getattr(device, "allowed_services", None) and device.allowed_services.exists():
+                allowed_ids = list(device.allowed_services.values_list("id", flat=True))
+                has_active = ServiceSubscription.objects.filter(
+                    user=user, service__in=allowed_ids, state=ServiceSubscription.ACTIVE
+                ).exists()
+                if not has_active:
+                    response_status = 481
+            else:
+                if not user.has_door_access():
+                    response_status = 481
 
         logentry.granted = response_status == 0
         logentry.save()
 
         if response_status == 0:
+            # Use device type in log message (capitalized)
+            device_label = device.get_device_type_display()
             if method != "phone":
                 # uppercase NFC and MXID
-                user.log(f"Door opened with {method.upper()}")
+                user.log(f"{device_label} opened with {method.upper()}")
             else:
-                user.log(f"Door opened with {method}")
+                user.log(f"{device_label} opened with {method}")
             outserializer = UserAccessSerializer(user)
             return Response(outserializer.data)
 
         if response_status == 481:
+            # Use device type in log message (capitalized)
+            device_label = device.get_device_type_display()
             if method != "phone":
                 # uppercase NFC and MXID
-                user.log(f"Door access denied with {method.upper()}")
+                user.log(f"{device_label} access denied with {method.upper()}")
             else:
-                user.log(f"Door access denied with {method}")
-            door_access_denied.send(sender=self.__class__, user=user, method=method)
+                user.log(f"{device_label} access denied with {method}")
+            door_access_denied.send(sender=self.__class__, user=user, method=method, device=device)
             outserializer = UserAccessSerializer(user)
             return Response(outserializer.data, status=response_status)
 
