@@ -298,7 +298,7 @@ def handle_marked_for_deletion(sender, instance: models.CustomUser, raw, **kwarg
         send_mail(subject, plaintext_content, from_email, to)
 
         # Add to activity log
-        instance.log("Marked for deletion e-mail sent")
+        instance.log("Marked for deletion email sent")
 
 
 #
